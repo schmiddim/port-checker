@@ -1,0 +1,11 @@
+---
+probes:
+  - address: 127.0.0.1:1234
+    network: tcp
+    timeout: 1
+  - address: 127.0.0.1:1235
+    network: tcp
+    timeout: 1
+  - address: 127.0.0.1:1236
+    network: udp
+    timeout: 1

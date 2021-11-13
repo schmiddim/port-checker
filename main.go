@@ -1,21 +1,20 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"github.com/janosgyerik/portping"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v2"
+	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
 
-type probe struct {
-	address string
-	network string
-	timeout int
-}
 type prometheusConfigStruct struct {
 	registry       *prometheus.Registry
 	httpServerPort uint
@@ -27,11 +26,83 @@ type prometheusConfigStruct struct {
 	gaugeVectors   map[string]*prometheus.GaugeVec
 }
 
+type probe struct {
+	Address string
+	Network string
+	Timeout int
+}
+
+func (p probe) String() string {
+	return fmt.Sprintf("Address: %s, Network: %s, Timeout %d", p.Address, p.Network, p.Timeout)
+}
+
+type Probes struct {
+	Probes []probe
+}
+
+type runtimeConfStruct struct {
+	debug  bool
+	probes []probe
+}
+
 var prometheusConfig = prometheusConfigStruct{
 	gaugeVectors:   make(map[string]*prometheus.GaugeVec),
 	registry:       prometheus.NewRegistry(),
 	httpServerPort: 9101,
 }
+
+var rConf = runtimeConfStruct{
+	debug:  false,
+	probes: []probe{},
+}
+
+func initParams() {
+	probeString := ""
+	configFile := ""
+	flag.UintVar(&prometheusConfig.httpServerPort, "prometheusServerPort", prometheusConfig.httpServerPort, "Prometheus Exporter server port.")
+	flag.BoolVar(&rConf.debug, "debug", rConf.debug, "Log Level Debug")
+	flag.StringVar(&probeString, "probes", "", "List of hosts and ports to probe like 127.0.0.1:80;tcp,127.0.0.1:443;tcp,127.0.0.1:8990;tcp <host>:<port>;<Network>;<Timeout in seconds>")
+	flag.StringVar(&configFile, "configFile", "", "Pass a config file with probes")
+	flag.Parse()
+	logLvl := log.InfoLevel
+	if rConf.debug {
+		logLvl = log.DebugLevel
+	}
+	log.SetLevel(logLvl)
+
+	if strings.TrimSpace(configFile) != "" {
+		var probes = Probes{}
+		yamlFile, err := ioutil.ReadFile(configFile)
+		if err != nil {
+			panic(err)
+		}
+		err = yaml.Unmarshal(yamlFile, &probes)
+		if err != nil {
+			log.Fatalf("error: %v", err)
+
+		}
+
+		for _, probe := range probes.Probes {
+			rConf.probes = append(rConf.probes, probe)
+		}
+		log.Debug("Probes from File", probes)
+	}
+
+	if strings.TrimSpace(probeString) != "" {
+
+		rawProbesFromFlag := strings.Split(probeString, ",")
+		for _, rawProbe := range rawProbesFromFlag {
+			hostPortNetwork := strings.Split(rawProbe, ";")
+			aProbe := probe{}
+			aProbe.Address = hostPortNetwork[0]
+			aProbe.Network = hostPortNetwork[1]
+			aProbe.Timeout, _ = strconv.Atoi(hostPortNetwork[2])
+			rConf.probes = append(rConf.probes, aProbe)
+		}
+	}
+
+}
+
 func setupWebserver() {
 
 	// Register prom metrics path in http serv
@@ -56,39 +127,40 @@ func setupWebserver() {
 
 }
 
+func getNameForVector(probe probe) string {
+	name := strings.ReplaceAll(fmt.Sprintf("%s", probe.Address), ":", "_")
+	name = strings.ReplaceAll(name, ".", "_")
+	return name
+}
+
 func main() {
+	initParams()
 	setupWebserver()
-	var probes = []probe{
-		{timeout: 1, address: "127.0.0.1:80", network: "tcp"},
-		{timeout: 1, address: "127.0.0.1:443", network: "tcp"},
-		{timeout: 1, address: "127.0.0.1:8990", network: "tcp"},
-	}
 
-	for _, probe := range probes {
-
-		name := strings.ReplaceAll(fmt.Sprintf("%s", probe.address), ":", "_")
-		name = strings.ReplaceAll(name, ".", "_")
+	log.Info(rConf.probes)
+	// declare vectors
+	for _, probe := range rConf.probes {
+		name := getNameForVector(probe)
 		prometheusConfig.gaugeVectors[name] = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: "port_checker",
 			Name:      name,
-			Help:      name}, []string{"address", "network"})
+			Help:      name}, []string{"Address", "Network"})
 		prometheusConfig.registry.MustRegister(prometheusConfig.gaugeVectors[name])
 	}
 
+	// loop
 	for {
+		for _, probe := range rConf.probes {
+			name := getNameForVector(probe)
 
-		for _, probe := range probes {
-			name := strings.ReplaceAll(fmt.Sprintf("%s", probe.address), ":", "_")
-			name = strings.ReplaceAll(name, ".", "_")
-			r := portping.Ping(probe.network, probe.address, time.Duration(probe.timeout)*time.Second)
+			r := portping.Ping(probe.Network, probe.Address, time.Duration(probe.Timeout)*time.Second)
 			log.Debug(probe, r)
 
 			if r == nil {
-				prometheusConfig.gaugeVectors[name].WithLabelValues(probe.address, probe.network).Set(1)
+				prometheusConfig.gaugeVectors[name].WithLabelValues(probe.Address, probe.Network).Set(1)
 
 			} else {
-				prometheusConfig.gaugeVectors[name].WithLabelValues(probe.address, probe.network).Set(0)
-
+				prometheusConfig.gaugeVectors[name].WithLabelValues(probe.Address, probe.Network).Set(0)
 			}
 		}
 

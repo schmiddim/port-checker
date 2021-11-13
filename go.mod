@@ -6,6 +6,7 @@ require (
 	github.com/janosgyerik/portping v1.0.1
 	github.com/prometheus/client_golang v1.11.0
 	github.com/sirupsen/logrus v1.8.1
+	gopkg.in/yaml.v2 v2.3.0
 )
 
 require (
