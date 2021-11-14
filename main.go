@@ -26,6 +26,10 @@ type prometheusConfigStruct struct {
 	gaugeVectors   map[string]*prometheus.GaugeVec
 }
 
+type Probes struct {
+	Probes []probe
+}
+
 type probe struct {
 	Address string
 	Network string
@@ -36,8 +40,15 @@ func (p probe) String() string {
 	return fmt.Sprintf("Address: %s, Network: %s, Timeout %d", p.Address, p.Network, p.Timeout)
 }
 
-type Probes struct {
-	Probes []probe
+func (p probe) GetNameForVector() string {
+	forbidden := [...]string{".", ":"} //ellipses
+	replaceWith := "_"
+	for _, char := range forbidden {
+		p.Address = strings.ReplaceAll(p.Address, char, replaceWith)
+
+	}
+
+	return p.Address
 }
 
 type runtimeConfStruct struct {
@@ -51,7 +62,7 @@ var prometheusConfig = prometheusConfigStruct{
 	httpServerPort: 9101,
 }
 
-var rConf = runtimeConfStruct{
+var runtimeConf = runtimeConfStruct{
 	debug:  false,
 	probes: []probe{},
 }
@@ -60,12 +71,12 @@ func initParams() {
 	probeString := ""
 	configFile := ""
 	flag.UintVar(&prometheusConfig.httpServerPort, "prometheusServerPort", prometheusConfig.httpServerPort, "Prometheus Exporter server port.")
-	flag.BoolVar(&rConf.debug, "debug", rConf.debug, "Log Level Debug")
+	flag.BoolVar(&runtimeConf.debug, "debug", runtimeConf.debug, "Log Level Debug")
 	flag.StringVar(&probeString, "probes", "", "List of hosts and ports to probe like 127.0.0.1:80;tcp,127.0.0.1:443;tcp,127.0.0.1:8990;tcp <host>:<port>;<Network>;<Timeout in seconds>")
 	flag.StringVar(&configFile, "configFile", "", "Pass a config file with probes")
 	flag.Parse()
 	logLvl := log.InfoLevel
-	if rConf.debug {
+	if runtimeConf.debug {
 		logLvl = log.DebugLevel
 	}
 	log.SetLevel(logLvl)
@@ -83,7 +94,7 @@ func initParams() {
 		}
 
 		for _, probe := range probes.Probes {
-			rConf.probes = append(rConf.probes, probe)
+			runtimeConf.probes = append(runtimeConf.probes, probe)
 		}
 		log.Debug("Probes from File", probes)
 	}
@@ -97,7 +108,7 @@ func initParams() {
 			aProbe.Address = hostPortNetwork[0]
 			aProbe.Network = hostPortNetwork[1]
 			aProbe.Timeout, _ = strconv.Atoi(hostPortNetwork[2])
-			rConf.probes = append(rConf.probes, aProbe)
+			runtimeConf.probes = append(runtimeConf.probes, aProbe)
 		}
 	}
 
@@ -127,20 +138,14 @@ func setupWebserver() {
 
 }
 
-func getNameForVector(probe probe) string {
-	name := strings.ReplaceAll(fmt.Sprintf("%s", probe.Address), ":", "_")
-	name = strings.ReplaceAll(name, ".", "_")
-	return name
-}
-
 func main() {
 	initParams()
 	setupWebserver()
 
-	log.Info(rConf.probes)
+	log.Info(runtimeConf.probes)
 	// declare vectors
-	for _, probe := range rConf.probes {
-		name := getNameForVector(probe)
+	for _, probe := range runtimeConf.probes {
+		name := probe.GetNameForVector()
 		prometheusConfig.gaugeVectors[name] = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: "port_checker",
 			Name:      name,
@@ -150,8 +155,8 @@ func main() {
 
 	// loop
 	for {
-		for _, probe := range rConf.probes {
-			name := getNameForVector(probe)
+		for _, probe := range runtimeConf.probes {
+			name := probe.GetNameForVector()
 
 			r := portping.Ping(probe.Network, probe.Address, time.Duration(probe.Timeout)*time.Second)
 			log.Debug(probe, r)
